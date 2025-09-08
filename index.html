@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>IP Gate</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:#0f172a; color:#e2e8f0 }
+    .card { background:#111827; padding:28px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.35); width:min(560px,92vw) }
+    h1 { margin:0 0 .25rem }
+    .muted { color:#9ca3af }
+    code { background:#0b1220; padding:.15rem .35rem; border-radius:6px }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div id="msg">Checking your IP…</div>
+  </div>
+
+  <script>
+    // === CONFIG ===
+    const MODE = "default-deny";                // block everyone unless allowlisted
+    const ALLOWLIST = ["103.205.135.48"];       // only this IP is allowed
+    const BLOCKLIST = [];                       // optional; overrides allowlist if used
+
+    // Get public IP (simple API)
+    async function getIP() {
+      const res = await fetch("https://api.ipify.org?format=json", { cache: "no-store" });
+      const { ip } = await res.json();
+      return ip;
+    }
+
+    function isAllowed(ip) {
+      if (BLOCKLIST.includes(ip)) return false;
+      if (MODE === "default-deny") return ALLOWLIST.includes(ip);
+      return !BLOCKLIST.includes(ip);
+    }
+
+    (async () => {
+      const msg = document.getElementById("msg");
+      try {
+        const ip = await getIP();
+        if (isAllowed(ip)) {
+          msg.innerHTML = `<h1>Access granted ✅</h1><p class="muted">Your IP <code>${ip}</code> is allowed.</p>`;
+        } else {
+          msg.innerHTML = `<h1>You are blocked 🚫</h1><p class="muted">Your IP <code>${ip}</code> is not permitted.</p>`;
+        }
+      } catch (e) {
+        console.error(e);
+        msg.innerHTML = `<h1>Couldn’t check IP 🤕</h1><p class="muted">Please refresh and try again.</p>`;
+      }
+    })();
+  </script>
+</body>
+</html>
