@@ -4,193 +4,81 @@
   <meta charset="utf-8" />
   <title>CIDR IP Gate</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>
-    :root{--bg:#0f1220;--panel:#171a2b;--text:#e7eaf6;--muted:#9aa3b2;--ok:#2ecc71;--bad:#ff5c5c;--warn:#f1c40f;--blue:#4b8bff}
-    *{box-sizing:border-box}
-    body{margin:0;font:16px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text);display:grid;min-height:100vh;place-items:center}
-    .card{width:min(920px,92vw);background:var(--panel);border-radius:18px;padding:22px 22px 16px;box-shadow:0 12px 40px #0008}
-    h1{font-size:22px;margin:0 0 12px}
-    .row{display:grid;grid-template-columns:1fr;gap:14px}
-    @media (min-width:860px){.row{grid-template-columns:1.2fr .8fr}}
-    textarea{width:100%;min-height:160px;background:#0e1020;border:1px solid #2a2f4a;color:var(--text);border-radius:12px;padding:12px;font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .muted{color:var(--muted)}
-    .btn{background:var(--blue);border:none;color:white;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600}
-    .btn:disabled{opacity:.6;cursor:not-allowed}
-    .kvs{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:10px 0}
-    code{background:#0e1020;padding:2px 6px;border-radius:8px}
-    .pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-weight:700}
-    .ok{background:#173725;color:#aef3c5}
-    .bad{background:#3b181c;color:#ffb3b3}
-    .warn{background:#3a3205;color:#ffe69a}
-    .footer{display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:12px}
-    .small{font-size:12px}
-    .switch{display:inline-flex;align-items:center;gap:8px}
-    .switch input{accent-color:var(--blue)}
-    .list{margin:8px 0 0;padding-left:18px}
-    .error{color:#ffb3b3}
-  </style>
 </head>
 <body>
-  <div class="card">
-    <h1>CIDR IP Gate (Allowlist)</h1>
-    <p class="muted small">Enter one CIDR or IP per line. Examples: <code>192.168.1.0/24</code>, <code>203.0.113.42</code> (treated as <code>/32</code>).</p>
-    <div class="row">
-      <section>
-        <label for="cidrs" class="small muted">Allowed CIDRs / IPs</label>
-        <textarea id="cidrs" placeholder="203.0.113.0/24\n198.51.100.10\n10.0.0.0/8"></textarea>
-        <div class="footer">
-          <label class="switch small"><input id="mode" type="checkbox" checked> Block everyone except allowlist</label>
-          <button id="save" class="btn">Save rules</button>
-        </div>
-        <div id="errors" class="error small" aria-live="polite"></div>
-        <p class="small muted">Rules are stored in your browser (localStorage). This demo does client-side gating only — for real security, enforce the same logic on your server / edge.</p>
-      </section>
+  <div id="app">Checking your IP…</div>
 
-      <section>
-        <div id="msg" class="pill warn">Checking your IP…</div>
-        <div class="kvs">
-          <div class="muted small">Your IPv4</div>
-          <div id="myip"><code>—</code></div>
-          <div class="muted small">Decision</div>
-          <div id="decision">—</div>
-        </div>
-        <details>
-          <summary class="small">Debug</summary>
-          <pre id="debug" class="small muted"></pre>
-        </details>
-      </section>
-    </div>
-  </div>
+  <script>
+    const ALLOWED = [
+      "192.168.1.0/24",
+      "203.0.113.10",    // treated as /32
+      "10.0.0.0/8"
+    ];
 
-<script>
-// ===== Helpers: IPv4 math =====
-function ipToInt(ip){
-  const parts = ip.trim().split('.');
-  if(parts.length !== 4) throw new Error(`Invalid IPv4: ${ip}`);
-  for(const p of parts){
-    if(!/^\d+$/.test(p)) throw new Error(`Invalid octet '${p}' in ${ip}`);
-    const n = +p; if(n<0||n>255) throw new Error(`Octet out of range in ${ip}`);
-  }
-  return parts.reduce((acc,oct)=> (acc<<8) + (+oct), 0) >>> 0;
-}
-
-function intToIp(n){
-  return [24,16,8,0].map(s => (n>>>s)&255).join('.');
-}
-
-function maskFromBits(bits){
-  if(bits<0||bits>32) throw new Error(`Mask bits out of range: ${bits}`);
-  return bits===0 ? 0 : (0xFFFFFFFF << (32-bits)) >>> 0;
-}
-
-function parseCidr(str){
-  const s = str.trim();
-  if(!s) throw new Error('Empty rule');
-  if(!s.includes('/')){
-    // Treat a bare IP as /32
-    const ip = ipToInt(s);
-    return { net: ip, maskBits: 32, mask: 0xFFFFFFFF, original: s+'/32' };
-  }
-  const [ipStr,bitsStr] = s.split('/');
-  const maskBits = Number(bitsStr);
-  if(!Number.isInteger(maskBits)) throw new Error(`Invalid mask in '${s}'`);
-  const ip = ipToInt(ipStr);
-  const mask = maskFromBits(maskBits);
-  const net = (ip & mask) >>> 0;
-  return { net, maskBits, mask, original: s };
-}
-
-function ipInCidr(ipInt, cidr){
-  return (ipInt & cidr.mask) >>> 0 === cidr.net;
-}
-
-function decide(ipStr, rawRules){
-  const ipInt = ipToInt(ipStr);
-  const lines = rawRules.split(/\n+/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean);
-  const parsed = [];
-  const errors = [];
-  for(const line of lines){
-    try{ parsed.push(parseCidr(line)); }
-    catch(e){ errors.push(`${line}: ${e.message}`); }
-  }
-  const match = parsed.find(rule => ipInCidr(ipInt, rule));
-  return { match, parsed, errors };
-}
-
-// ===== UI logic =====
-const el = id => document.getElementById(id);
-const cidrsTA = el('cidrs');
-const msg = el('msg');
-const decision = el('decision');
-const myip = el('myip');
-const debug = el('debug');
-const errorsBox = el('errors');
-const saveBtn = el('save');
-const modeCb = el('mode');
-
-function setBadge(state, text){
-  msg.className = 'pill ' + (state==='ok'?'ok':state==='bad'?'bad':'warn');
-  msg.textContent = text;
-}
-
-function loadState(){
-  cidrsTA.value = localStorage.getItem('cidr_rules') || '203.0.113.0/24\n198.51.100.10\n10.0.0.0/8';
-  modeCb.checked = (localStorage.getItem('cidr_mode') ?? 'allow') === 'allow';
-}
-
-function saveState(){
-  localStorage.setItem('cidr_rules', cidrsTA.value);
-  localStorage.setItem('cidr_mode', modeCb.checked ? 'allow' : 'off');
-}
-
-async function getIPv4(){
-  // Force IPv4 to avoid receiving IPv6 and failing the parser.
-  const res = await fetch('https://api4.ipify.org?format=json', { cache: 'no-store' });
-  const { ip } = await res.json();
-  return ip;
-}
-
-async function runGate(){
-  setBadge('warn','Checking your IP…');
-  errorsBox.textContent = '';
-  try{
-    const ip = await getIPv4();
-    myip.innerHTML = `<code>${ip}</code>`;
-
-    const { match, parsed, errors } = decide(ip, cidrsTA.value);
-    if(errors.length) {
-      errorsBox.textContent = 'Invalid rules:\n' + errors.join('\n');
+    // --- Helpers: IPv4 math ---
+    function ipToInt(ip) {
+      return ip.split(".").reduce((acc, oct) => (acc << 8) + (+oct), 0) >>> 0;
     }
 
-    const allowed = modeCb.checked ? Boolean(match) : true; // allowlist mode
-    decision.innerHTML = allowed
-      ? `<span class="pill ok">ALLOWED</span>`
-      : `<span class="pill bad">BLOCKED</span>`;
+    function maskFromBits(bits) {
+      return bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+    }
 
-    setBadge(allowed ? 'ok':'bad', allowed ? 'Access granted ✅' : 'You are blocked 🚫');
+    function parseCidr(str) {
+      if (!str.includes("/")) {
+        // single IP = /32
+        const ip = ipToInt(str);
+        return { net: ip, mask: 0xFFFFFFFF };
+      }
+      const [ipStr, bitsStr] = str.split("/");
+      const maskBits = Number(bitsStr);
+      const mask = maskFromBits(maskBits);
+      const ip = ipToInt(ipStr);
+      return { net: (ip & mask) >>> 0, mask };
+    }
 
-    // Debug info
-    const lines = [
-      `Rules parsed: ${parsed.length}`,
-      ...(match ? [`Matched: ${match.original}`, `Network: ${intToIp(match.net)}/${match.maskBits}`] : ['Matched: none'])
-    ];
-    debug.textContent = lines.join('\n');
+    function ipInCidr(ipInt, cidr) {
+      return (ipInt & cidr.mask) >>> 0 === cidr.net;
+    }
 
-    // If blocked, you might want to hard-stop rendering your app here.
-    // e.g., location.href = '/blocked.html';
-  } catch (e){
-    console.error(e);
-    setBadge('bad','Couldn’t check IP');
-    decision.textContent = '—';
-    errorsBox.textContent = (e && e.message) ? e.message : 'Unknown error';
-  }
-}
+    function isAllowed(ipStr) {
+      const ipInt = ipToInt(ipStr);
+      for (const rule of ALLOWED) {
+        const cidr = parseCidr(rule.trim());
+        if (ipInCidr(ipInt, cidr)) return true;
+      }
+      return false;
+    }
 
-saveBtn.addEventListener('click', () => { saveState(); runGate(); });
-modeCb.addEventListener('change', saveState);
+    // --- Main check ---
+    async function runGate() {
+      const app = document.getElementById("app");
+      try {
+        const res = await fetch("https://api4.ipify.org?format=json", { cache: "no-store" });
+        const { ip } = await res.json();
 
-loadState();
-runGate();
-</script>
+        if (isAllowed(ip)) {
+          app.innerHTML = `
+            <h1>Access granted ✅</h1>
+            <p>Your IP <code>${ip}</code> is allowed.</p>
+            <div>
+              <!-- Protected content goes here -->
+              <p>Welcome to the private area!</p>
+            </div>
+          `;
+        } else {
+          app.innerHTML = `
+            <h1>Blocked 🚫</h1>
+            <p>Your IP <code>${ip}</code> is not on the allowlist.</p>
+          `;
+        }
+      } catch (e) {
+        console.error(e);
+        app.innerHTML = "<h1>Couldn’t check IP 🤕</h1>";
+      }
+    }
+
+    runGate();
+  </script>
 </body>
 </html>
